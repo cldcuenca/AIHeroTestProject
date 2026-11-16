@@ -1,6 +1,6 @@
 # Taskroom
 
-A quiet, personal, desktop-first space to capture Tasks and choose their Priority.
+A quiet, personal, desktop-first space to capture, prioritize and finish Tasks.
 React, strict TypeScript and Vite; no account, backend or task-data network requests.
 
 ## Run locally
@@ -39,11 +39,23 @@ as a local file is not supported. There is no server-side application.
   time, then stable ID. A Priority change does not recreate the Task.
 - Choose **Inbox** or **All Tasks** in the sidebar. All Tasks is a combined view,
   not another saved List. All current Tasks belong to Inbox.
-- Keyboard users can Tab through navigation, capture and Priority controls.
-  Focus is visible; committed captures and Priority changes are announced.
+- Switch between **Active** and **Completed** without changing the selected
+  List. Quick-add is available only in Active; switching views retains unsubmitted
+  capture text until reload or closing the page. Startup always selects All Tasks/Active.
+- Choose **Complete** to move a Task to Completed, or **Reopen** to make it Active
+  again. Identity, title, notes, List, Priority and original creation order are
+  retained. Reopening clears the completion time; completing again records only
+  the latest time. Completed Tasks stay until you explicitly delete them.
+- Choose **Delete** in either status view, review the named Task and permanence
+  warning, then **Delete permanently**. **Cancel** or **Escape** changes nothing.
+  Deletion survives reload; there is no trash, undelete or automatic cleanup.
+- Keyboard users can Tab through navigation, capture, Priority and lifecycle controls.
+  Deletion starts with Cancel focused and keeps keyboard focus in its dialog.
+  Cancellation restores the originating control; a removed Task returns focus
+  to the current status selector. Focus is visible; committed changes are announced.
   Entered markup is displayed as plain, inert text.
 
-This is the PPT-18 capture/Priority slice. Completion, deletion, named Lists,
+This includes the PPT-18 capture/Priority and PPT-19 lifecycle slices. Named Lists,
 full editing/notes, search, backups/restore and automatic cross-tab refreshing
 are **not available yet**. They are separate later slices, not hidden controls.
 
@@ -65,7 +77,9 @@ The app shows loading until storage succeeds. A storage or invalid-data error
 is not an empty collection: it never replaces saved data with a fresh collection
 or silently switches to memory. Success is shown only after a transaction
 commits. A failed capture retains its input; a failed Priority save retains the
-committed value and order. Errors are accessible and visible.
+committed value and order. Failed completion/reopening keeps the previous saved
+status. Failed deletion keeps the confirmation open with an error and removes
+nothing; cancel it before refreshing saved Tasks. Errors are accessible and visible.
 
 If storage fails:
 
@@ -76,8 +90,10 @@ If storage fails:
 4. For an invalid-data error, keep the same profile and seek recovery help.
    **Do not clear site data** as a troubleshooting shortcut.
 
-This slice rejects a Priority change based on an outdated record version; reload
-the saved Tasks and review before retrying. It does not yet automatically
+This slice rejects Priority, lifecycle or deletion commands based on an outdated
+record version, including a deletion confirmation opened before another tab
+changed the Task. Cancel the confirmation, reload the saved Tasks and review
+before retrying. It does not yet automatically
 refresh other tabs. Already committed changes are never reversed to hide errors.
 
 ## Checks
@@ -100,12 +116,15 @@ Only the two specification-revision-1-approved seams are tested:
 - **Browser:** user-visible app, production Task Collection and real IndexedDB.
   Isolated browser contexts cover startup, capture/reload, duplicates, inert
   text, Priority ordering, keyboard/focus, after-load offline operation,
-  unavailable storage and real transaction aborts after successful write
-  requests. Saved outcomes are asserted through the app, not database queries.
+  completion/reopening, status/List navigation, confirmed deletion/cancellation,
+  stale confirmation rejection, unavailable storage and real transaction aborts
+  after successful write requests. Saved outcomes are asserted through the app,
+  not database queries.
 - **Task Collection interface:** complete records, validation, scoped reads,
   deterministic ordering, returned versions/conflicts and controlled read,
-  quota/commit failures. Failure adapters do not prove browser atomicity,
-  permissions, focus or UI wiring.
+  quota/commit failures, deterministic lifecycle timestamps, deletion and
+  unchanged results under stale versions or failed writes. Failure adapters do
+  not prove browser atomicity, permissions, focus or UI wiring.
 
 Automated Chromium, Firefox and WebKit checks are configured. These bundled
 engines are not proof of compatibility with every current Chrome, Edge, Firefox
@@ -142,19 +161,32 @@ const entry = inbox.tasks[0];
 if (entry) {
   await collection.setPriority(entry.task.id, 'high', entry.version);
 }
+const current = (await collection.read()).tasks[0];
+if (current) {
+  await collection.setStatus(current.task.id, 'completed', current.version,
+    { status: 'completed' });
+}
 ```
 
 - `read(scope?)` defaults to all Active Tasks. Returns Lists, ordered
   `{ task, version }` entries, collection revision and restore generation.
-- `capture({ title })` and `setPriority(id, priority, version)` return an
-  All Tasks/Active committed snapshot. Call `read` for another scope.
+- `capture({ title })` returns an All Tasks/Active committed snapshot.
+- `setPriority(id, priority, version, scope?)`,
+  `setStatus(id, 'active' | 'completed', version, scope?)` and
+  `deleteTask(id, version, scope?)` return a committed snapshot in the requested
+  scope (default All Tasks/Active). Use the latest returned/read Task version
+  for each command; stale versions or missing Tasks reject with `conflict`.
+  An already-current status rejects with `validation`, without revision changes.
+  The UI owns named permanent-deletion confirmation before calling `deleteTask`.
 - `Task` contains `id`, `title`, `notes`, `listId`, `priority`, `status`,
   `createdAt`, `updatedAt`, `completedAt`. `List` contains `id`, `name`,
   `createdAt`. Domain fields are separate from internal revisions.
 - IDs are generated with browser UUID generation; timestamps are UTC ISO 8601.
-  Priority saves preserve creation time and identity, update saved-change time,
-  and atomically advance record and collection revisions. Restore generation
-  is initialized and checked, reserved for the later restore slice.
+  Priority and status saves preserve creation time and identity, update saved-change
+  time, and atomically advance record and collection revisions. Completing sets
+  `completedAt`; reopening clears it. Deletion removes the record and atomically
+  advances the collection revision, leaving other records untouched. Restore
+  generation is initialized and checked, reserved for the later restore slice.
 - Failures reject with `CollectionError`: `validation`, `invalid-data`,
   `storage`, or `conflict`. Never treat rejection as an empty read or success.
 - Optional factory settings select an isolated database, time/UUID sources or

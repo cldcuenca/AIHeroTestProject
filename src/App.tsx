@@ -8,6 +8,7 @@ const collection = createTaskCollection();
 export function App() {
   const [snapshot, setSnapshot] = useState<CollectionSnapshot>();
   const [listId, setListId] = useState<string>();
+  const [status, setStatus] = useState<'active' | 'completed'>('active');
   const [title, setTitle] = useState('');
   const [error, setError] = useState('');
   const [titleInvalid, setTitleInvalid] = useState(false);
@@ -15,24 +16,49 @@ export function App() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const [deleteTarget, setDeleteTarget] = useState<SavedTask | null>(null);
+  const [deleteError, setDeleteError] = useState('');
   const titleInput = useRef<HTMLInputElement>(null);
   const busy = useRef(false);
   const priorityFocus = useRef<HTMLSelectElement | null>(null);
+  const lifecycleFocus = useRef<HTMLButtonElement | null>(null);
+  const activeView = useRef<HTMLButtonElement>(null);
+  const completedView = useRef<HTMLButtonElement>(null);
+  const deleteDialog = useRef<HTMLDialogElement>(null);
+  const cancelDelete = useRef<HTMLButtonElement>(null);
+  const confirmDeleteControl = useRef<HTMLButtonElement>(null);
+  const deleteReturnFocus = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    const dialog = deleteDialog.current;
+    if (deleteTarget) {
+      dialog?.showModal();
+      cancelDelete.current?.focus();
+    } else if (dialog?.open) {
+      dialog.close();
+      deleteReturnFocus.current?.focus();
+    }
+  }, [deleteTarget]);
 
   useEffect(() => {
     if (!saving && priorityFocus.current) {
       priorityFocus.current.focus();
       priorityFocus.current = null;
     }
+    if (!saving && lifecycleFocus.current) {
+      lifecycleFocus.current.focus();
+      lifecycleFocus.current = null;
+    }
   }, [saving]);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
+    setSnapshot(undefined);
     setError('');
     setTitleInvalid(false);
     setNotice('');
-    collection.read().then((saved) => {
+    collection.read({ ...(listId === undefined ? {} : { listId }), status }).then((saved) => {
       if (active) setSnapshot(saved);
     }).catch((failure: unknown) => {
       if (active) setError(failure instanceof Error ? failure.message : 'Storage could not be loaded.');
@@ -40,7 +66,7 @@ export function App() {
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [loadAttempt]);
+  }, [loadAttempt, listId, status]);
 
   async function capture(event: FormEvent) {
     event.preventDefault();
@@ -73,10 +99,60 @@ export function App() {
     setTitleInvalid(false);
     setNotice('');
     try {
-      setSnapshot(await collection.setPriority(saved.task.id, priority, saved.version));
+      setSnapshot(await collection.setPriority(saved.task.id, priority, saved.version, {
+        ...(listId === undefined ? {} : { listId }), status,
+      }));
       setNotice('Priority saved.');
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Priority could not be saved. Please retry.');
+    } finally {
+      busy.current = false;
+      setSaving(false);
+    }
+  }
+
+  async function changeStatus(saved: SavedTask, control: HTMLButtonElement) {
+    if (busy.current) return;
+    busy.current = true;
+    lifecycleFocus.current = control;
+    setSaving(true);
+    setError('');
+    setTitleInvalid(false);
+    setNotice('');
+    try {
+      const nextStatus = saved.task.status === 'active' ? 'completed' : 'active';
+      setSnapshot(await collection.setStatus(saved.task.id, nextStatus, saved.version, {
+        ...(listId === undefined ? {} : { listId }), status,
+      }));
+      setNotice(nextStatus === 'completed' ? 'Task completed.' : 'Task reopened.');
+      lifecycleFocus.current = status === 'active' ? activeView.current : completedView.current;
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : 'Task status could not be saved. Please retry.');
+    } finally {
+      busy.current = false;
+      setSaving(false);
+    }
+  }
+
+  async function confirmDelete() {
+    if (busy.current || !deleteTarget) return;
+    busy.current = true;
+    lifecycleFocus.current = confirmDeleteControl.current;
+    setSaving(true);
+    setDeleteError('');
+    setError('');
+    setTitleInvalid(false);
+    setNotice('');
+    try {
+      setSnapshot(await collection.deleteTask(deleteTarget.task.id, deleteTarget.version, {
+        ...(listId === undefined ? {} : { listId }), status,
+      }));
+      setNotice('Task permanently deleted.');
+      deleteReturnFocus.current = status === 'active' ? activeView.current : completedView.current;
+      lifecycleFocus.current = deleteReturnFocus.current;
+      setDeleteTarget(null);
+    } catch (failure) {
+      setDeleteError(failure instanceof Error ? failure.message : 'Task could not be deleted. Please retry.');
     } finally {
       busy.current = false;
       setSaving(false);
@@ -90,8 +166,8 @@ export function App() {
         <div className="brand"><span aria-hidden="true">◈</span> Taskroom</div>
         <p className="eyebrow">YOUR SPACE</p>
         <nav aria-label="Task views">
-          <button aria-current={listId === undefined ? 'page' : undefined} onClick={() => setListId(undefined)}>All Tasks</button>
-          <button aria-current={listId === 'inbox' ? 'page' : undefined} onClick={() => setListId('inbox')}>Inbox</button>
+          <button disabled={saving} aria-current={listId === undefined ? 'page' : undefined} onClick={() => setListId(undefined)}>All Tasks</button>
+          <button disabled={saving} aria-current={listId === 'inbox' ? 'page' : undefined} onClick={() => setListId('inbox')}>Inbox</button>
         </nav>
         <div className="storage-note">
           <strong>A little space of your own.</strong>
@@ -105,23 +181,29 @@ export function App() {
           <h1>{listId === undefined ? 'All Tasks' : 'Inbox'}</h1>
           <p>Capture a thought. Choose what comes next.</p>
         </header>
-        <div className="view-bar"><strong>Active</strong><span>Priority · oldest first</span></div>
+        <div className="view-bar">
+          <div role="group" aria-label="Task status">
+            <button ref={activeView} disabled={saving} aria-pressed={status === 'active'} onClick={() => setStatus('active')}>Active</button>
+            <button ref={completedView} disabled={saving} aria-pressed={status === 'completed'} onClick={() => setStatus('completed')}>Completed</button>
+          </div>
+          <span>Priority · oldest first</span>
+        </div>
         <p role="status" className="save-notice">{notice}</p>
         {error && <div className="error"><p role="alert" id="collection-error">{error}</p><button className="retry" disabled={loading || saving} onClick={() => setLoadAttempt((attempt) => attempt + 1)}>Retry loading</button></div>}
-        {!snapshot ? (
+        {loading || !snapshot ? (
           loading && <p aria-live="polite">Loading your tasks…</p>
         ) : (
           <>
-            <form onSubmit={(event) => { void capture(event); }} className="capture-form" aria-label="Capture a task">
+            {status === 'active' && <form onSubmit={(event) => { void capture(event); }} className="capture-form" aria-label="Capture a task">
               <label htmlFor="task-title">Task title</label>
               <div className="capture-controls">
                 <input id="task-title" ref={titleInput} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="What’s on your mind?" readOnly={saving} aria-invalid={titleInvalid} aria-describedby={titleInvalid ? 'collection-error' : 'capture-hint'} />
                 <button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Add task'}</button>
               </div>
               <p id="capture-hint" className="hint">Press Enter to add to Inbox. Start small; priorities can change.</p>
-            </form>
+            </form>}
             {snapshot.tasks.length === 0 ? (
-              <section className="empty-state"><span aria-hidden="true">✦</span><h2>No active tasks yet.</h2><p>A clear space for your next idea. Add your first task above.</p></section>
+              <section className="empty-state"><span aria-hidden="true">✦</span><h2>{status === 'active' ? 'No active tasks yet.' : 'No completed tasks yet.'}</h2><p>{status === 'active' ? 'A clear space for your next idea. Add your first task above.' : 'Finished tasks stay here until you choose to delete them.'}</p></section>
             ) : (
               <ul aria-label="Tasks" className="task-list">
                 {snapshot.tasks.map((saved) => (
@@ -135,6 +217,15 @@ export function App() {
                     }}>
                       <option value="high">High</option><option value="normal">Normal</option><option value="low">Low</option>
                     </select>
+                    <button className="task-action" disabled={saving} aria-label={`${saved.task.status === 'active' ? 'Complete' : 'Reopen'} ${saved.task.title}`} onClick={(event) => { void changeStatus(saved, event.currentTarget); }}>
+                      {saved.task.status === 'active' ? 'Complete' : 'Reopen'}
+                    </button>
+                    <button className="task-action danger" disabled={saving} aria-label={`Delete ${saved.task.title}`} onClick={(event) => {
+                      deleteReturnFocus.current = event.currentTarget;
+                      setDeleteError('');
+                      setNotice('');
+                      setDeleteTarget(saved);
+                    }}>Delete</button>
                   </li>
                 ))}
               </ul>
@@ -143,6 +234,32 @@ export function App() {
         )}
         <footer>Private by design. One task at a time.</footer>
       </main>
+      <dialog ref={deleteDialog} aria-labelledby="delete-heading" aria-describedby="delete-warning" aria-busy={saving} onKeyDown={(event) => {
+        if (event.key !== 'Tab') return;
+        const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+        const first = buttons[0];
+        const last = buttons[buttons.length - 1];
+        if (!first || !last) {
+          event.preventDefault();
+        } else if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }} onCancel={(event) => {
+        event.preventDefault();
+        if (!busy.current) setDeleteTarget(null);
+      }}>
+        <h2 id="delete-heading">Delete task?</h2>
+        <p id="delete-warning">Permanently delete “{deleteTarget?.task.title}”? This cannot be undone. There is no trash or undelete.</p>
+        {deleteError && <p role="alert" className="error">{deleteError}</p>}
+        <div className="dialog-actions">
+          <button ref={cancelDelete} className="task-action" disabled={saving} onClick={() => setDeleteTarget(null)}>Cancel</button>
+          <button ref={confirmDeleteControl} className="task-action danger" disabled={saving} onClick={() => { void confirmDelete(); }}>{saving ? 'Deleting…' : 'Delete permanently'}</button>
+        </div>
+      </dialog>
     </div>
   );
 }
