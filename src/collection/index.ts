@@ -29,7 +29,9 @@ export class CollectionError extends Error {
 export interface TaskCollection {
   read(scope?: ViewScope): Promise<CollectionSnapshot>;
   capture(input: Readonly<{ title: string }>): Promise<CollectionSnapshot>;
-  setPriority(id: string, priority: Priority, version: TaskVersion): Promise<CollectionSnapshot>;
+  setPriority(id: string, priority: Priority, version: TaskVersion, scope?: ViewScope): Promise<CollectionSnapshot>;
+  setStatus(id: string, status: Task['status'], version: TaskVersion, scope?: ViewScope): Promise<CollectionSnapshot>;
+  deleteTask(id: string, version: TaskVersion, scope?: ViewScope): Promise<CollectionSnapshot>;
 }
 
 type Options = Readonly<{
@@ -121,7 +123,7 @@ export function createTaskCollection(options: Options = {}): TaskCollection {
         return { next, value: snapshot(next) };
       });
     },
-    setPriority: async (id, priority, version) => {
+    setPriority: async (id, priority, version, scope) => {
       if (!prioritySchema.safeParse(priority).success) {
         throw new CollectionError('validation', 'Choose High, Normal, or Low priority.');
       }
@@ -141,8 +143,57 @@ export function createTaskCollection(options: Options = {}): TaskCollection {
             revision: task.revision + 1,
           } : task),
         });
-        return { next, value: snapshot(next) };
+        return { next, value: snapshot(next, scope) };
       });
     },
+    setStatus: (id, status, version, scope) => run(true, (state) => {
+      if (typeof id !== 'string' || !id.trim() || id !== id.trim() ||
+        (status !== 'active' && status !== 'completed') ||
+        typeof version !== 'object' || version === null ||
+        !Number.isSafeInteger(version.recordRevision) || version.recordRevision < 0 ||
+        !Number.isSafeInteger(version.restoreGeneration) || version.restoreGeneration < 0) {
+        throw new CollectionError('validation', 'Choose a saved task, its version, and Active or Completed status.');
+      }
+      const current = state.tasks.find((task) => task.id === id);
+      if (!current || current.revision !== version.recordRevision ||
+        state.restoreGeneration !== version.restoreGeneration) {
+        throw new CollectionError('conflict', 'This task changed. Reload the saved tasks before trying again.');
+      }
+      if (current.status === status) {
+        throw new CollectionError('validation', `This task is already ${status}.`);
+      }
+      const time = new Date(Math.max(Date.parse(now()), Date.parse(current.updatedAt))).toISOString();
+      const next = validate({
+        ...state,
+        collectionRevision: state.collectionRevision + 1,
+        tasks: state.tasks.map((task) => task.id === id ? {
+          ...task,
+          status,
+          completedAt: status === 'completed' ? time : null,
+          updatedAt: time,
+          revision: task.revision + 1,
+        } : task),
+      });
+      return { next, value: snapshot(next, scope) };
+    }),
+    deleteTask: (id, version, scope) => run(true, (state) => {
+      if (typeof id !== 'string' || !id.trim() || id !== id.trim() ||
+        typeof version !== 'object' || version === null ||
+        !Number.isSafeInteger(version.recordRevision) || version.recordRevision < 0 ||
+        !Number.isSafeInteger(version.restoreGeneration) || version.restoreGeneration < 0) {
+        throw new CollectionError('validation', 'Choose a saved task and its version before deleting.');
+      }
+      const current = state.tasks.find((task) => task.id === id);
+      if (!current || current.revision !== version.recordRevision ||
+        state.restoreGeneration !== version.restoreGeneration) {
+        throw new CollectionError('conflict', 'This task changed. Reload the saved tasks before trying again.');
+      }
+      const next = validate({
+        ...state,
+        collectionRevision: state.collectionRevision + 1,
+        tasks: state.tasks.filter((task) => task.id !== id),
+      });
+      return { next, value: snapshot(next, scope) };
+    }),
   };
 }

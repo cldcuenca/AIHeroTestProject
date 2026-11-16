@@ -71,6 +71,11 @@ test.each(invalidCollections)('invalid saved data: %s is an error, never a repai
   await expect(collection.read()).rejects.toMatchObject({ code: 'invalid-data' });
   await expect(collection.capture({ title: 'Must not overwrite unreadable data' }))
     .rejects.toMatchObject({ code: 'invalid-data' });
+  const version = { recordRevision: 1, restoreGeneration: 0 };
+  await expect(collection.setStatus(task.id, 'completed', version))
+    .rejects.toMatchObject({ code: 'invalid-data' });
+  await expect(collection.deleteTask(task.id, version))
+    .rejects.toMatchObject({ code: 'invalid-data' });
   await expect(collection.read()).rejects.toMatchObject({ code: 'invalid-data' });
 });
 
