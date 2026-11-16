@@ -32,8 +32,9 @@ as a local file is not supported. There is no server-side application.
 - Type a title and press **Enter** or choose **Add task**. Leading/trailing
   whitespace is removed; internal whitespace is preserved. Blank titles are
   rejected. Duplicate titles are separate Tasks.
-- Captures belong to the selected named List, otherwise Inbox, and start Active, with Normal Priority and empty
-  notes. After a successful save, the title clears and receives focus again.
+- Captures belong to the selected named List, otherwise Inbox, and start Active,
+  with Normal Priority and empty notes. After a successful save, the title clears
+  and receives focus again.
 - Select **High**, **Normal**, or **Low** for a Task. Changes are saved explicitly
   by that control and survive reload. Order is Priority, then oldest creation
   time, then stable ID. A Priority change does not recreate the Task.
@@ -152,6 +153,10 @@ timed out under load. The verified complete-run sequence is `npm run test:collec
 `npm run test:browser -- --workers=1`, then `npm run build`, with `CI=1` and the
 existing `PLAYWRIGHT_BROWSERS_PATH` cache. This does not claim that a default
 parallel `npm test` run passed in that environment; assertions/timeouts are unchanged.
+An existing Firefox storage wait also intermittently exceeded its deadline with
+one worker; isolated repeats and a subsequent complete run passed unchanged.
+Inspect and report actual failures rather than treating a retry as proof of
+determinism or extending deadlines to conceal them.
 
 Only the two specification-revision-1-approved seams are tested:
 
@@ -166,7 +171,7 @@ Only the two specification-revision-1-approved seams are tested:
   not database queries.
 - **Task Collection interface:** complete records, validation, scoped reads,
   deterministic ordering, returned versions/conflicts and controlled read,
-  quota/commit failures, deterministic lifecycle timestamps, deletion and
+  quota/commit failures, deterministic lifecycle timestamps, Task deletion,
   List name/reference protection, full-record edits, counted List deletion,
   unchanged results under stale versions or failed writes. Failure adapters do
   not prove browser atomicity, permissions, focus or UI wiring.
@@ -243,9 +248,9 @@ if (current) {
   `createdAt`, `updatedAt`, `completedAt`. `List` contains `id`, `name`,
   `createdAt`. Domain fields are separate from internal revisions.
 - IDs are generated with browser UUID generation; timestamps are UTC ISO 8601.
-  Priority and status saves preserve creation time and identity, update saved-change
+  Edits and Priority/status saves preserve creation time and identity, update saved-change
   time, and atomically advance record and collection revisions. Completing sets
-  `completedAt`; reopening clears it. Deletion removes the record and atomically
+  `completedAt`; reopening clears it. Task deletion removes the record and atomically
   advances the collection revision, leaving other records untouched. Restore
   generation is initialized and checked, reserved for the later restore slice.
 - Failures reject with `CollectionError`: `validation`, `invalid-data`,
