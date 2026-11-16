@@ -76,6 +76,13 @@ test.each(invalidCollections)('invalid saved data: %s is an error, never a repai
     .rejects.toMatchObject({ code: 'invalid-data' });
   await expect(collection.deleteTask(task.id, version))
     .rejects.toMatchObject({ code: 'invalid-data' });
+  await expect(collection.editTask(task.id, { title: 'Edited', notes: '', priority: 'high', listId: 'inbox' }, version))
+    .rejects.toMatchObject({ code: 'invalid-data' });
+  await expect(collection.createList({ name: 'Work' })).rejects.toMatchObject({ code: 'invalid-data' });
+  const collectionVersion = { collectionRevision: 1, restoreGeneration: 0 };
+  await expect(collection.renameList('work', 'Office', collectionVersion)).rejects.toMatchObject({ code: 'invalid-data' });
+  await expect(collection.previewListDeletion('work')).rejects.toMatchObject({ code: 'invalid-data' });
+  await expect(collection.deleteList('work', collectionVersion)).rejects.toMatchObject({ code: 'invalid-data' });
   await expect(collection.read()).rejects.toMatchObject({ code: 'invalid-data' });
 });
 

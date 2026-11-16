@@ -1,7 +1,7 @@
 :root { font-family: Inter, "Segoe UI", system-ui, sans-serif; color: #233c34; background: #f7f8f4; font-synthesis: none; line-height: 1.5; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 280px; }
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button, select { cursor: pointer; }
 button { border: 0; }
 button:disabled { cursor: wait; opacity: .7; }
@@ -12,7 +12,7 @@ button:disabled { cursor: wait; opacity: .7; }
 .brand > span { display: grid; place-items: center; width: 36px; height: 36px; background: #165c47; color: white; border-radius: 12px; }
 .eyebrow { font-size: 11px; font-weight: 750; letter-spacing: 1.8px; color: #586e60; }
 nav { display: grid; gap: 8px; margin-top: 12px; }
-nav button { background: transparent; padding: 12px 16px; border-radius: 9px; color: #3a5146; text-align: left; font-weight: 600; }
+nav button { background: transparent; padding: 12px 16px; border-radius: 9px; color: #3a5146; text-align: left; font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
 nav button[aria-current="page"] { background: #d7e5d7; color: #164933; box-shadow: inset 3px 0 #236744; }
 nav button:hover { background: #dce7d8; }
 .storage-note { margin-top: auto; padding-top: 70px; color: #516357; font-size: 12px; }
@@ -28,7 +28,14 @@ header > p:last-child { color: #5c6e63; margin-top: 16px; }
 .capture-form { padding: 20px; border: 1px solid #dae2d5; border-radius: 14px; background: #fff; box-shadow: 0 4px 16px #2c442a05; }
 label { font-size: 13px; font-weight: 650; display: inline-block; margin-bottom: 8px; }
 .capture-controls { display: flex; gap: 12px; }
-input { min-width: 0; width: 100%; padding: 12px 14px; border: 1px solid #bdcbbf; border-radius: 8px; color: #233c34; background: #fcfdfb; }
+input, textarea { min-width: 0; width: 100%; padding: 12px 14px; border: 1px solid #bdcbbf; border-radius: 8px; color: #233c34; background: #fcfdfb; }
+textarea { resize: vertical; }
+.editor-form { display: grid; }
+.editor-form label:not(:first-child) { margin-top: 16px; }
+.editor-form select { max-width: 100%; }
+.new-list { margin-top: 16px; }
+.list-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+header h1 { overflow-wrap: anywhere; }
 .capture-controls button, .retry { flex-shrink: 0; padding: 12px 20px; border-radius: 8px; color: white; background: #165c47; font-weight: 600; }
 .capture-controls button:hover, .retry:hover { background: #104633; }
 .hint { margin: 12px 0 0; color: #5c6e63; font-size: 12px; }
@@ -38,7 +45,7 @@ input { min-width: 0; width: 100%; padding: 12px 14px; border: 1px solid #bdcbbf
 h2 { font-size: 20px; font-weight: 600; letter-spacing: -.4px; margin: 18px 0 8px; }
 .empty-state > p { font-size: 14px; color: #5c6e63; }
 .task-list { padding: 0; list-style: none; margin-top: 30px; }
-.task-list > li { display: flex; align-items: center; gap: 16px; justify-content: space-between; padding: 21px 8px; border-bottom: 1px solid #dfe5da; }
+.task-list > li { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; justify-content: space-between; padding: 21px 8px; border-bottom: 1px solid #dfe5da; }
 .task-content { min-width: 0; display: flex; flex-direction: column; gap: 8px; flex: 1 1 160px; }
 .task-action { padding: 8px 10px; border: 1px solid #bdcbbf; border-radius: 7px; color: #165c47; background: #fff; font-size: 13px; }
 .danger { color: #873017; border-color: #b44224; }
