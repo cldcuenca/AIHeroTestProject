@@ -49,7 +49,194 @@ function setup(storage = new ControlledStorage()) {
   return { collection, storage };
 }
 
+function organizedStorage() {
+  return new ControlledStorage({
+    ...emptySavedCollection(), collectionRevision: 7, restoreGeneration: 2,
+    lists: [
+      { id: 'inbox', name: 'Inbox', createdAt: time, revision: 0 },
+      { id: 'work', name: 'Work', createdAt: time, revision: 1 },
+      { id: 'personal', name: 'Personal', createdAt: time, revision: 1 },
+    ],
+    tasks: [
+      { id: 'active', title: 'Waiting', notes: 'Waiting\nfor Ana', listId: 'work', priority: 'high',
+        status: 'active', createdAt: time, updatedAt: time, completedAt: null, revision: 3 },
+      { id: 'completed', title: 'Finished', notes: 'Details', listId: 'work', priority: 'low',
+        status: 'completed', createdAt: time, updatedAt: time, completedAt: time, revision: 4 },
+      { id: 'survivor', title: 'Inbox work', notes: '', listId: 'inbox', priority: 'normal',
+        status: 'active', createdAt: time, updatedAt: time, completedAt: null, revision: 1 },
+    ],
+  });
+}
+
 describe('Task Collection public interface (revision-1 supporting seam)', () => {
+  test.each(['create', 'rename', 'edit', 'delete'] as const)('%s List/editor command waits for commit and preserves both statuses after read/write failures', async (operation) => {
+    const storage = organizedStorage();
+    const collection = createTaskCollection({ storage, now: () => '2026-11-18T12:00:00.000Z' });
+    const before = await collection.read();
+    const completedBefore = await collection.read({ status: 'completed' });
+    const original = before.tasks.find(({ task }) => task.id === 'active');
+    if (!original) throw new Error('Missing fixture task.');
+    const command = () => {
+      switch (operation) {
+        case 'create': return collection.createList({ name: 'Another List' });
+        case 'rename': return collection.renameList('work', 'Office', before);
+        case 'edit': return collection.editTask(original.task.id, { ...original.task, title: 'Edited' }, original.version);
+        case 'delete': return collection.deleteList('work', before);
+      }
+    };
+    storage.failRead = true;
+    await expect(command()).rejects.toMatchObject({ code: 'storage' });
+    storage.failRead = false;
+    expect(await collection.read()).toEqual(before);
+    expect(await collection.read({ status: 'completed' })).toEqual(completedBefore);
+    let release: (() => void) | undefined;
+    storage.commitGate = new Promise<void>((resolve) => { release = resolve; });
+    storage.failWrite = true;
+    let settled = false;
+    const pending = command().then(
+      () => { settled = true; return 'unexpected-success'; },
+      (error: unknown) => { settled = true; return error; },
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
+    expect(await collection.read()).toEqual(before);
+    expect(await collection.read({ status: 'completed' })).toEqual(completedBefore);
+    if (!release) throw new Error('Missing commit release.');
+    release();
+    expect(await pending).toMatchObject({ code: 'storage' });
+    storage.commitGate = undefined;
+    storage.failWrite = false;
+    expect(await collection.read()).toEqual(before);
+    expect(await collection.read({ status: 'completed' })).toEqual(completedBefore);
+    expect((await command()).collectionRevision).toBe(8);
+  });
+
+  test('rename preserves List and task identities and order, rejects duplicate/reserved names and protects Inbox', async () => {
+    const { collection } = setup(organizedStorage());
+    const before = await collection.read();
+    const completed = await collection.read({ status: 'completed' });
+    for (const name of [' ', 'INBOX', ' All Tasks ', 'personal']) {
+      await expect(collection.renameList('work', name, before)).rejects.toMatchObject({ code: 'validation' });
+      expect(await collection.read()).toEqual(before);
+    }
+    await expect(collection.renameList('inbox', 'Renamed', before)).rejects.toMatchObject({ code: 'validation' });
+    await expect(collection.deleteList('inbox', before)).rejects.toMatchObject({ code: 'validation' });
+    await expect(collection.previewListDeletion('inbox')).rejects.toMatchObject({ code: 'validation' });
+    const renamed = await collection.renameList('work', ' OFFICE ', before);
+    expect(renamed).toEqual({ ...before, collectionRevision: 8, lists: [
+      { id: 'inbox', name: 'Inbox', createdAt: time },
+      { id: 'work', name: 'OFFICE', createdAt: time },
+      { id: 'personal', name: 'Personal', createdAt: time },
+    ] });
+    expect((await collection.read({ status: 'completed' })).tasks).toEqual(completed.tasks);
+  });
+
+  test('malformed List identities/versions and invalid edits never mutate the collection', async () => {
+    const { collection } = setup(organizedStorage());
+    const before = await collection.read();
+    const completed = await collection.read({ status: 'completed' });
+    for (const [id, version] of [
+      ['', before], [null, before], [' work ', before], ['work', null],
+      ['work', { collectionRevision: -1, restoreGeneration: 2 }],
+      ['work', { collectionRevision: 7, restoreGeneration: Number.NaN }],
+    ]) {
+      await expect(Reflect.apply(collection.renameList, collection, [id, 'Office', version])).rejects.toMatchObject({ code: 'validation' });
+      await expect(Reflect.apply(collection.deleteList, collection, [id, version])).rejects.toMatchObject({ code: 'validation' });
+    }
+    const entry = before.tasks[0];
+    if (!entry) throw new Error('Missing fixture task.');
+    for (const input of [
+      null, {}, { ...entry.task, title: ' ' }, { ...entry.task, notes: 2 },
+      { ...entry.task, priority: 'urgent' }, { ...entry.task, listId: 'missing' },
+    ]) {
+      await expect(Reflect.apply(collection.editTask, collection, [entry.task.id, input, entry.version]))
+        .rejects.toMatchObject({ code: 'validation' });
+    }
+    await expect(Reflect.apply(collection.editTask, collection, ['', entry.task, entry.version])).rejects.toMatchObject({ code: 'validation' });
+    await expect(Reflect.apply(collection.editTask, collection, [entry.task.id, entry.task, null])).rejects.toMatchObject({ code: 'validation' });
+    expect(await collection.read()).toEqual(before);
+    expect(await collection.read({ status: 'completed' })).toEqual(completed);
+  });
+
+  test('stale List confirmations reject after any saved change and empty Lists delete without affecting tasks', async () => {
+    const { collection } = setup(organizedStorage());
+    const preview = await collection.previewListDeletion('work');
+    await collection.capture({ title: 'New work', listId: 'work' });
+    const newer = await collection.read();
+    const completed = await collection.read({ status: 'completed' });
+    await expect(collection.deleteList('work', preview.version)).rejects.toMatchObject({ code: 'conflict' });
+    await expect(collection.renameList('work', 'Office', preview.version)).rejects.toMatchObject({ code: 'conflict' });
+    expect(await collection.read()).toEqual(newer);
+    expect(await collection.read({ status: 'completed' })).toEqual(completed);
+    const empty = await collection.previewListDeletion('personal');
+    expect([empty.activeCount, empty.completedCount]).toEqual([0, 0]);
+    const result = await collection.deleteList('personal', empty.version);
+    expect(result.tasks).toEqual(newer.tasks);
+    expect((await collection.read({ status: 'completed' })).tasks).toEqual(completed.tasks);
+    expect(result.lists.map((list) => list.id)).toEqual(['inbox', 'work']);
+    await expect(collection.previewListDeletion('personal')).rejects.toMatchObject({ code: 'conflict' });
+  });
+
+  test('task edits reject stale/deleted/reused versions, but unrelated changes do not invalidate an editor', async () => {
+    const storage = organizedStorage();
+    const { collection } = setup(storage);
+    const before = await collection.read();
+    const entry = before.tasks[0];
+    if (!entry) throw new Error('Missing fixture task.');
+    await collection.createList({ name: 'Unrelated' });
+    const changed = await collection.editTask(entry.task.id, { ...entry.task, notes: 'Changed' }, entry.version);
+    await expect(collection.editTask(entry.task.id, { ...entry.task, title: 'Stale' }, entry.version)).rejects.toMatchObject({ code: 'conflict' });
+    expect(await collection.read()).toEqual(changed);
+    const latest = changed.tasks.find(({ task }) => task.id === entry.task.id);
+    if (!latest) throw new Error('Missing edited task.');
+    await collection.deleteTask(latest.task.id, latest.version);
+    const deleted = await collection.read();
+    await expect(collection.editTask(latest.task.id, latest.task, latest.version)).rejects.toMatchObject({ code: 'conflict' });
+    expect(await collection.read()).toEqual(deleted);
+    const replacement = organizedStorage();
+    const replacementValue: unknown = replacement.saved;
+    if (typeof replacementValue !== 'object' || replacementValue === null) throw new Error('Missing fixture.');
+    storage.saved = { ...replacementValue, collectionRevision: 12, restoreGeneration: 3 };
+    const restored = await collection.read();
+    await expect(collection.editTask(entry.task.id, entry.task, entry.version)).rejects.toMatchObject({ code: 'conflict' });
+    await expect(collection.deleteList('work', before)).rejects.toMatchObject({ code: 'conflict' });
+    expect(await collection.read()).toEqual(restored);
+  });
+
+  test('named Lists keep creation order and identity through scoped reads', async () => {
+    const storage = new ControlledStorage();
+    const ids = ['work', 'personal'];
+    const collection = createTaskCollection({
+      storage, now: () => time, uuid: () => {
+        const id = ids.shift();
+        if (!id) throw new Error('Missing deterministic ID.');
+        return id;
+      },
+    });
+
+    await collection.createList({ name: ' Work ' });
+    const saved = await collection.createList({ name: 'Personal' }, { listId: 'work', status: 'completed' });
+    expect(saved.lists).toEqual([
+      { id: 'inbox', name: 'Inbox', createdAt: time },
+      { id: 'work', name: 'Work', createdAt: time },
+      { id: 'personal', name: 'Personal', createdAt: time },
+    ]);
+    expect(saved.tasks).toEqual([]);
+    expect(saved.collectionRevision).toBe(2);
+    expect(await collection.read({ status: 'completed' })).toEqual(saved);
+  });
+
+  test('invalid, duplicate and reserved List names fail actionably without any saved change', async () => {
+    const { collection } = setup();
+    await collection.createList({ name: 'Work' });
+    const before = await collection.read();
+    for (const name of ['', ' \t\n ', ' work ', 'WORK', ' inbox ', 'ALL TASKS', null, 2]) {
+      await expect(Reflect.apply(collection.createList, collection, [{ name }]))
+        .rejects.toMatchObject({ code: 'validation', message: expect.stringMatching(/name/i) });
+      expect(await collection.read()).toEqual(before);
+    }
+  });
+
   test('capture returns the complete agreed record and committed defaults, without storing All Tasks', async () => {
     const { collection } = setup();
     expect(await collection.read()).toEqual({
@@ -58,6 +245,7 @@ describe('Task Collection public interface (revision-1 supporting seam)', () => 
       collectionRevision: 0,
       restoreGeneration: 0,
     });
+
     const saved = await collection.capture({ title: '  Plan  the week  ' });
     expect(saved).toEqual({
       lists: [{ id: 'inbox', name: 'Inbox', createdAt: time }],
@@ -79,6 +267,88 @@ describe('Task Collection public interface (revision-1 supporting seam)', () => 
       restoreGeneration: 0,
     });
     expect(await collection.read({ listId: 'inbox', status: 'active' })).toEqual(saved);
+  });
+
+  test('explicit edits retain Completed identity, creation and completion while moving, reordering and updating versions', async () => {
+    const storage = new ControlledStorage({
+      ...emptySavedCollection(),
+      lists: [
+        { id: 'inbox', name: 'Inbox', createdAt: time, revision: 0 },
+        { id: 'work', name: 'Work', createdAt: time, revision: 1 },
+      ],
+      tasks: [{
+        id: 'edit-task', title: 'Original', notes: 'Original notes', listId: 'inbox',
+        priority: 'normal', status: 'completed', createdAt: time, updatedAt: time, completedAt: time, revision: 4,
+      }],
+      collectionRevision: 7, restoreGeneration: 2,
+    });
+    const clock = '2026-11-17T09:00:00.000Z';
+    const collection = createTaskCollection({ storage, now: () => clock });
+    const original = onlyTask(await collection.read({ status: 'completed' }));
+    const saved = await collection.editTask(original.task.id, {
+      title: ' New  title ', notes: 'Waiting for Ana\n<script>inert</script>\n', priority: 'high', listId: 'work',
+    }, original.version, { listId: 'work', status: 'completed' });
+    expect(onlyTask(saved)).toEqual({
+      task: { ...original.task, title: 'New  title', notes: 'Waiting for Ana\n<script>inert</script>\n',
+        priority: 'high', listId: 'work', updatedAt: clock },
+      version: { recordRevision: 5, restoreGeneration: 2 },
+    });
+    expect(saved.collectionRevision).toBe(8);
+    expect((await collection.read({ listId: 'inbox', status: 'completed' })).tasks).toEqual([]);
+    expect(await collection.read({ listId: 'work', status: 'completed' })).toEqual(saved);
+  });
+
+  test('List deletion previews both statuses and atomically moves every full record to Inbox', async () => {
+    const storage = new ControlledStorage({
+      ...emptySavedCollection(),
+      lists: [
+        { id: 'inbox', name: 'Inbox', createdAt: time, revision: 0 },
+        { id: 'work', name: 'Work', createdAt: time, revision: 1 },
+      ],
+      tasks: [
+        { id: 'active', title: 'Waiting', notes: 'Waiting\nfor Ana', listId: 'work', priority: 'high',
+          status: 'active', createdAt: time, updatedAt: time, completedAt: null, revision: 3 },
+        { id: 'completed', title: 'Finished', notes: 'Details', listId: 'work', priority: 'low',
+          status: 'completed', createdAt: time, updatedAt: time, completedAt: time, revision: 4 },
+        { id: 'survivor', title: 'Inbox work', notes: '', listId: 'inbox', priority: 'normal',
+          status: 'active', createdAt: time, updatedAt: time, completedAt: null, revision: 1 },
+      ],
+      collectionRevision: 7, restoreGeneration: 2,
+    });
+    const clock = '2026-11-17T09:00:00.000Z';
+    const collection = createTaskCollection({ storage, now: () => clock });
+    const active = await collection.read();
+    const completed = await collection.read({ status: 'completed' });
+    const preview = await collection.previewListDeletion('work');
+    expect(preview).toEqual({
+      list: { id: 'work', name: 'Work', createdAt: time }, activeCount: 1, completedCount: 1,
+      version: { collectionRevision: 7, restoreGeneration: 2 },
+    });
+    const result = await collection.deleteList('work', preview.version, { listId: 'work' });
+    expect(result.lists).toEqual([{ id: 'inbox', name: 'Inbox', createdAt: time }]);
+    expect(result.collectionRevision).toBe(8);
+    expect(result.restoreGeneration).toBe(2);
+    expect(result.tasks).toEqual(active.tasks.map((saved) => saved.task.listId === 'work' ? {
+      task: { ...saved.task, listId: 'inbox', updatedAt: clock },
+      version: { recordRevision: 4, restoreGeneration: 2 },
+    } : saved));
+    expect((await collection.read({ listId: 'inbox', status: 'completed' })).tasks).toEqual([{
+      task: { ...onlyTask(completed).task, listId: 'inbox', updatedAt: clock },
+      version: { recordRevision: 5, restoreGeneration: 2 },
+    }]);
+  });
+
+  test('malformed List/capture inputs reject as validation instead of silently assigning Inbox or storage errors', async () => {
+    const { collection } = setup();
+    const before = await collection.read();
+    for (const input of [null, undefined, {}, { name: null }]) {
+      await expect(Reflect.apply(collection.createList, collection, [input])).rejects.toMatchObject({ code: 'validation' });
+      expect(await collection.read()).toEqual(before);
+    }
+    for (const input of [null, undefined, {}, { title: 'Bad List', listId: null }, { title: 'Bad List', listId: '' }, { title: 'Bad List', listId: 'missing' }]) {
+      await expect(Reflect.apply(collection.capture, collection, [input])).rejects.toMatchObject({ code: 'validation' });
+      expect(await collection.read()).toEqual(before);
+    }
   });
 
   test('blank input fails validation without changing saved outcomes', async () => {

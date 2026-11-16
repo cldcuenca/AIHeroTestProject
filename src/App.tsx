@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { CollectionError, createTaskCollection } from './collection';
 import type { CollectionSnapshot, Priority, SavedTask } from './collection';
+import { ListDialog } from './ListDialog';
+import { TaskEditor } from './TaskEditor';
+import { DeleteListDialog } from './DeleteListDialog';
 
 const collection = createTaskCollection();
 
@@ -18,7 +21,16 @@ export function App() {
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [deleteTarget, setDeleteTarget] = useState<SavedTask | null>(null);
   const [deleteError, setDeleteError] = useState('');
+  const [creatingList, setCreatingList] = useState(false);
+  const [renamingList, setRenamingList] = useState(false);
+  const [editing, setEditing] = useState<SavedTask | null>(null);
+  const [deletingList, setDeletingList] = useState(false);
+  const scope = { ...(listId === undefined ? {} : { listId }), status };
+  const selectedName = listId === undefined ? 'All Tasks' : snapshot?.lists.find((list) => list.id === listId)?.name ?? 'Loading List…';
+  const selectedList = snapshot?.lists.find((list) => list.id === listId);
   const titleInput = useRef<HTMLInputElement>(null);
+  const nextViewNotice = useRef('');
+  const committedNavigation = useRef(false);
   const busy = useRef(false);
   const priorityFocus = useRef<HTMLSelectElement | null>(null);
   const lifecycleFocus = useRef<HTMLButtonElement | null>(null);
@@ -52,12 +64,18 @@ export function App() {
   }, [saving]);
 
   useEffect(() => {
+    setError('');
+    setTitleInvalid(false);
+    setNotice(nextViewNotice.current);
+    nextViewNotice.current = '';
+    if (committedNavigation.current) {
+      committedNavigation.current = false;
+      setLoading(false);
+      return;
+    }
     let active = true;
     setLoading(true);
     setSnapshot(undefined);
-    setError('');
-    setTitleInvalid(false);
-    setNotice('');
     collection.read({ ...(listId === undefined ? {} : { listId }), status }).then((saved) => {
       if (active) setSnapshot(saved);
     }).catch((failure: unknown) => {
@@ -77,9 +95,9 @@ export function App() {
     setTitleInvalid(false);
     setNotice('');
     try {
-      setSnapshot(await collection.capture({ title }));
+      setSnapshot(await collection.capture({ title, ...(listId === undefined ? {} : { listId }) }, scope));
       setTitle('');
-      setNotice('Task added to Inbox.');
+      setNotice(`Task added to ${listId === undefined ? 'Inbox' : selectedName}.`);
     } catch (failure) {
       setTitleInvalid(failure instanceof CollectionError && failure.code === 'validation');
       setError(failure instanceof Error ? failure.message : 'Task could not be saved. Please retry.');
@@ -168,7 +186,10 @@ export function App() {
         <nav aria-label="Task views">
           <button disabled={saving} aria-current={listId === undefined ? 'page' : undefined} onClick={() => setListId(undefined)}>All Tasks</button>
           <button disabled={saving} aria-current={listId === 'inbox' ? 'page' : undefined} onClick={() => setListId('inbox')}>Inbox</button>
+          {snapshot?.lists.filter((list) => list.id !== 'inbox').map((list) =>
+            <button key={list.id} disabled={saving} aria-current={listId === list.id ? 'page' : undefined} onClick={() => setListId(list.id)}>{list.name}</button>)}
         </nav>
+        <button className="task-action new-list" disabled={saving || loading || !snapshot} onClick={(event) => { event.currentTarget.focus(); setCreatingList(true); }}>New List</button>
         <div className="storage-note">
           <strong>A little space of your own.</strong>
           <p>Saved in this browser profile on this site only. No account. No synchronization.</p>
@@ -178,8 +199,12 @@ export function App() {
       <main id="main">
         <header>
           <p className="eyebrow">MAKE ROOM FOR WHAT MATTERS</p>
-          <h1>{listId === undefined ? 'All Tasks' : 'Inbox'}</h1>
+          <h1>{selectedName}</h1>
           <p>Capture a thought. Choose what comes next.</p>
+          {selectedList && selectedList.id !== 'inbox' && <div className="list-actions">
+            <button className="task-action" disabled={saving} onClick={(event) => { event.currentTarget.focus(); setRenamingList(true); }}>Rename List</button>
+            <button className="task-action danger" disabled={saving} onClick={(event) => { event.currentTarget.focus(); setDeletingList(true); }}>Delete List</button>
+          </div>}
         </header>
         <div className="view-bar">
           <div role="group" aria-label="Task status">
@@ -200,7 +225,7 @@ export function App() {
                 <input id="task-title" ref={titleInput} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="What’s on your mind?" readOnly={saving} aria-invalid={titleInvalid} aria-describedby={titleInvalid ? 'collection-error' : 'capture-hint'} />
                 <button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Add task'}</button>
               </div>
-              <p id="capture-hint" className="hint">Press Enter to add to Inbox. Start small; priorities can change.</p>
+              <p id="capture-hint" className="hint">Press Enter to add to {listId === undefined ? 'Inbox' : selectedName}. Start small; priorities can change.</p>
             </form>}
             {snapshot.tasks.length === 0 ? (
               <section className="empty-state"><span aria-hidden="true">✦</span><h2>{status === 'active' ? 'No active tasks yet.' : 'No completed tasks yet.'}</h2><p>{status === 'active' ? 'A clear space for your next idea. Add your first task above.' : 'Finished tasks stay here until you choose to delete them.'}</p></section>
@@ -208,7 +233,7 @@ export function App() {
               <ul aria-label="Tasks" className="task-list">
                 {snapshot.tasks.map((saved) => (
                   <li key={saved.task.id}>
-                    <div className="task-content"><strong>{saved.task.title}</strong>{listId === undefined && <span className="list-tag">Inbox</span>}</div>
+                    <div className="task-content"><strong>{saved.task.title}</strong>{listId === undefined && <span className="list-tag">{snapshot.lists.find((list) => list.id === saved.task.listId)?.name}</span>}</div>
                     <select aria-label={`Priority for ${saved.task.title}`} value={saved.task.priority} disabled={saving} onChange={(event) => {
                       const priority = event.target.value;
                       if (priority === 'high' || priority === 'normal' || priority === 'low') {
@@ -226,6 +251,7 @@ export function App() {
                       setNotice('');
                       setDeleteTarget(saved);
                     }}>Delete</button>
+                    <button className="task-action" disabled={saving} aria-label={`Edit ${saved.task.title}`} onClick={(event) => { event.currentTarget.focus(); setEditing(saved); }}>Edit</button>
                   </li>
                 ))}
               </ul>
@@ -234,6 +260,25 @@ export function App() {
         )}
         <footer>Private by design. One task at a time.</footer>
       </main>
+      {deletingList && selectedList && <DeleteListDialog collection={collection} target={selectedList} scope={scope} onClose={() => setDeletingList(false)} fallbackFocus={() => status === 'active' ? activeView.current : completedView.current} onSaved={(result) => {
+        setDeletingList(false);
+        setSnapshot(result);
+        nextViewNotice.current = 'List deleted. All its tasks moved to Inbox.';
+        committedNavigation.current = true;
+        setListId('inbox');
+        setNotice('List deleted. All its tasks moved to Inbox.');
+      }} />}
+      {editing && snapshot && <TaskEditor collection={collection} saved={editing} snapshot={snapshot} scope={scope} onClose={() => setEditing(null)} fallbackFocus={() => status === 'active' ? activeView.current : completedView.current} onSaved={(result) => {
+        setSnapshot(result);
+        setEditing(null);
+        setNotice('Task saved.');
+      }} />}
+      {snapshot && (creatingList || renamingList) && <ListDialog collection={collection} scope={scope} baseline={snapshot} {...(renamingList && selectedList ? { target: selectedList } : {})} onClose={() => { setCreatingList(false); setRenamingList(false); }} onSaved={(saved) => {
+        setSnapshot(saved);
+        setCreatingList(false);
+        setRenamingList(false);
+        setNotice(renamingList ? 'List renamed.' : 'List created.');
+      }} />}
       <dialog ref={deleteDialog} aria-labelledby="delete-heading" aria-describedby="delete-warning" aria-busy={saving} onKeyDown={(event) => {
         if (event.key !== 'Tab') return;
         const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
